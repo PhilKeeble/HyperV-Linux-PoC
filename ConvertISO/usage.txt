@@ -1,0 +1,309 @@
+================================================================================
+  New-BaseVHDX.ps1 - Base Image Builder
+  Builds a generalised VHDX from a Windows or Ubuntu ISO with no user interaction
+  during the actual OS installation.
+================================================================================
+
+REQUIREMENTS
+------------
+  - Run PowerShell as Administrator
+  - Hyper-V feature enabled (including PowerShell management tools)
+  - Windows 10/11 or Windows Server 2016+ as the host OS
+  - Sufficient free disk space for the output VHDX (minimum SizeGB + ~10 GB temp)
+  - Ubuntu builds: additional temp space equal to the source ISO size (for patched copy)
+
+SYNTAX
+------
+  .\New-BaseVHDX.ps1 [parameters]
+
+PARAMETERS
+----------
+
+  -ISOPath <string>  [REQUIRED]
+      Full path to the source ISO file.
+      Supports: Windows 10, Windows 11, Windows Server 2012 R2 through 2025,
+                Ubuntu 22.04 LTS Server/Desktop, Ubuntu 24.04 LTS Server/Desktop.
+
+      Examples:
+        -ISOPath 'D:\ISOs\Win2022.iso'
+        -ISOPath 'C:\Downloads\ubuntu-24.04-live-server-amd64.iso'
+        -ISOPath 'C:\Downloads\ubuntu-24.04-desktop-amd64.iso'
+
+
+  -OutputVHDXPath <string>  [REQUIRED]
+      Full path where the finished VHDX will be saved.
+      The parent directory must already exist. The file must NOT already exist.
+
+      Examples:
+        -OutputVHDXPath 'E:\VHDX\Win2022-Base.vhdx'
+        -OutputVHDXPath 'E:\VHDX\Ubuntu2404-Base.vhdx'
+
+
+  -SizeGB <int>  [default: 60]
+      Size of the VHDX in gigabytes. Minimum 30.
+      The VHDX is created as dynamically expanding, so actual disk usage at rest
+      will be much smaller than this value.
+
+      Examples:
+        -SizeGB 60
+        -SizeGB 100
+
+
+  -AdminUsername <string>  [default: 'localadmin']
+      Username for the local administrator account created in the image.
+      Windows: account persists through Sysprep and is present in all clones.
+      Ubuntu:  account is created during autoinstall with sudo/NOPASSWD rights.
+
+      Examples:
+        -AdminUsername 'sysadmin'
+        -AdminUsername 'localadmin'
+
+
+  -AdminPassword <string>  [default: prompted interactively]
+      Password for the administrator account as a plain string.
+      If not provided, you will be prompted to enter it securely (input is masked).
+
+      Note: For Ubuntu, the password is hashed with SHA-512 crypt before being
+      written to cloud-init user-data. It is never stored in plain text on disk.
+      For Windows, it is Base64-encoded per the unattend.xml specification.
+
+      Examples:
+        -AdminPassword 'MyP@ssw0rd!'
+
+
+  -Hostname <string>  [default: 'base-image']
+      Temporary hostname assigned during the build.
+      Windows: removed during Sysprep; clones receive a generated name on first boot.
+      Ubuntu:  present in the installed image but overridden per-clone via CIDATA.
+
+      Examples:
+        -Hostname 'win-base'
+        -Hostname 'ubuntu-base'
+
+
+  -WindowsEditionIndex <int>  [default: 0 - interactive prompt]
+      Windows only. Index of the edition to install from the WIM/ESD.
+      If omitted (or set to 0), the script lists all available editions and
+      asks you to choose. Pass this parameter to run fully non-interactively.
+
+      Common indexes (vary by ISO - always verify with the interactive prompt first):
+        Windows Server ISOs:
+          1 = Standard (Desktop Experience)
+          2 = Standard Core
+          3 = Datacenter (Desktop Experience)
+          4 = Datacenter Core
+        Windows 10/11 consumer ISOs:
+          1 = Home
+          2 = Pro
+
+      Examples:
+        -WindowsEditionIndex 1
+        -WindowsEditionIndex 3
+
+
+  -TempVMName <string>  [default: 'VHDX-Builder-Temp']
+      Name of the temporary Hyper-V VM created during the build.
+      The VM is automatically removed when the build completes or fails.
+      Change this if you have a naming conflict with an existing VM.
+
+      Examples:
+        -TempVMName 'Build-Win2022'
+        -TempVMName 'Build-Ubuntu'
+
+
+  -CPUCount <int>  [default: 4]
+      Number of virtual CPUs for the temporary build VM.
+      More CPUs speeds up the OS setup phase.
+
+      Examples:
+        -CPUCount 4
+        -CPUCount 8
+
+
+  -MemoryGB <int>  [default: 4]
+      RAM in GB assigned to the temporary build VM (static, not dynamic).
+      Minimum recommended: 2 GB. Use 4+ GB for faster builds.
+
+      Examples:
+        -MemoryGB 4
+        -MemoryGB 8
+
+
+  -VirtualSwitchName <string>  [default: 'Default Switch']
+      Ubuntu only. Name of the Hyper-V virtual switch to attach to the build VM.
+      The Ubuntu installer downloads package updates during installation and
+      requires internet access unless your ISO includes all required packages.
+      'Default Switch' is the NAT switch created automatically by Hyper-V.
+      Windows build VMs run with no network switch attached.
+
+      To list available switches:
+        Get-VMSwitch | Select-Object Name, SwitchType
+
+      Examples:
+        -VirtualSwitchName 'Default Switch'
+        -VirtualSwitchName 'InternalOnly'
+
+
+  -SSHPublicKeyPath <string>  [optional, Ubuntu only]
+      Path to an SSH public key file (.pub) to embed in the base image.
+      The key is written to the admin user's ~/.ssh/authorized_keys during
+      autoinstall and will be present on all clones derived from the image.
+      If omitted, no authorized key is set (password auth only).
+
+      Examples:
+        -SSHPublicKeyPath 'C:\Users\Phil\.ssh\id_rsa.pub'
+        -SSHPublicKeyPath 'C:\Keys\deploy_key.pub'
+
+--------------------------------------------------------------------------------
+
+EXAMPLES
+--------
+
+  1. Windows Server 2022 - interactive edition selection, prompted password:
+
+       .\New-BaseVHDX.ps1 `
+           -ISOPath        'D:\ISOs\WindowsServer2022.iso' `
+           -OutputVHDXPath 'E:\VHDX\WinSrv2022-Base.vhdx'
+
+
+  2. Windows Server 2022 - fully non-interactive:
+
+       .\New-BaseVHDX.ps1 `
+           -ISOPath              'D:\ISOs\WindowsServer2022.iso' `
+           -OutputVHDXPath       'E:\VHDX\WinSrv2022-Base.vhdx' `
+           -SizeGB               80 `
+           -AdminUsername        'sysadmin' `
+           -AdminPassword        'MyP@ssw0rd!' `
+           -WindowsEditionIndex  1 `
+           -TempVMName           'Build-WinSrv2022' `
+           -CPUCount             4 `
+           -MemoryGB             4
+
+
+  3. Windows Server 2019 - large disk, more RAM for faster build:
+
+       .\New-BaseVHDX.ps1 `
+           -ISOPath              'D:\ISOs\WinSrv2019.iso' `
+           -OutputVHDXPath       'E:\VHDX\WinSrv2019-Base.vhdx' `
+           -SizeGB               120 `
+           -WindowsEditionIndex  2 `
+           -CPUCount             8 `
+           -MemoryGB             8
+
+
+  4. Ubuntu 24.04 LTS Server - defaults, prompted password:
+
+       .\New-BaseVHDX.ps1 `
+           -ISOPath        'D:\ISOs\ubuntu-24.04-live-server-amd64.iso' `
+           -OutputVHDXPath 'E:\VHDX\Ubuntu2404-Base.vhdx'
+
+
+  5. Ubuntu 24.04 LTS Server - custom user, SSH key, non-interactive:
+
+       .\New-BaseVHDX.ps1 `
+           -ISOPath          'D:\ISOs\ubuntu-24.04-live-server-amd64.iso' `
+           -OutputVHDXPath   'E:\VHDX\Ubuntu2404-Base.vhdx' `
+           -SizeGB           80 `
+           -AdminUsername    'sysadmin' `
+           -AdminPassword    'MyP@ssw0rd!' `
+           -SSHPublicKeyPath 'C:\Users\Phil\.ssh\id_rsa.pub' `
+           -CPUCount         8 `
+           -MemoryGB         8
+
+
+  6. Ubuntu 24.04 LTS Desktop - same parameters, just swap the ISO:
+
+       .\New-BaseVHDX.ps1 `
+           -ISOPath          'D:\ISOs\ubuntu-24.04-desktop-amd64.iso' `
+           -OutputVHDXPath   'E:\VHDX\Ubuntu2404-Desktop-Base.vhdx' `
+           -AdminUsername    'sysadmin' `
+           -AdminPassword    'MyP@ssw0rd!' `
+           -SSHPublicKeyPath 'C:\Users\Phil\.ssh\id_rsa.pub' `
+           -MemoryGB         8
+
+--------------------------------------------------------------------------------
+
+HOW IT WORKS
+------------
+
+  Windows (offline pipeline, ~10-30 minutes):
+    1.  Mounts the ISO and locates install.wim or install.esd
+    2.  Lists available editions (or uses -WindowsEditionIndex directly)
+    3.  Exports ESD to WIM if required
+    4.  Creates a new dynamic VHDX
+    5.  Partitions the VHDX: EFI (500 MB FAT32) + MSR (16 MB) + Windows (remainder NTFS)
+    6.  Applies the WIM to the Windows partition using DISM (no VM boot needed)
+    7.  Injects unattend.xml (sysprep answer file), SetupComplete.cmd,
+        Configure-BaseImage.ps1, and Configure-Clone.ps1 into the image
+    8.  Runs bcdboot to make the VHDX bootable (UEFI)
+    9.  Dismounts the VHDX and ISO
+    10. Creates a temporary Gen2 Hyper-V VM, boots it from the VHDX
+    11. Windows boots, runs SetupComplete.cmd which calls Configure-BaseImage.ps1
+    12. Configure-BaseImage.ps1 validates the sysprep answer file then runs:
+          sysprep /generalize /shutdown /oobe /quiet /mode:vm
+    13. Sysprep shuts the VM down; the temporary VM is removed
+    14. Output VHDX is generalised and ready to clone
+
+    On each clone's first boot, the sysprep unattend triggers Configure-Clone.ps1
+    which handles: Defender (GP-controlled off), Firewall (disabled), WinRM + CredSSP
+    (enabled and configured). This runs once then removes itself.
+
+
+  Ubuntu (online pipeline, ~20-40 minutes):
+    1.  Copies the Ubuntu ISO and patches boot/grub/grub.cfg in the copy to add
+        the 'autoinstall' kernel parameter (original ISO is never modified)
+    2.  Generates cloud-init user-data (autoinstall format) and meta-data
+    3.  Creates a 10 MB FAT-formatted VHD labelled CIDATA containing user-data
+        and meta-data with correct lowercase filenames (ISO9660 would uppercase them)
+    4.  Creates a new empty dynamic VHDX
+    5.  Creates a temporary Gen2 Hyper-V VM with Secure Boot disabled
+    6.  Attaches: patched Ubuntu ISO (DVD) + CIDATA seed VHD (SCSI) + target VHDX (SCSI)
+    7.  Boots the VM; GRUB boots with 'autoinstall' on the cmdline; subiquity detects
+        the CIDATA volume and runs the autoinstall unattended (no confirmation prompt)
+    8.  Ubuntu installs to the VHDX; late-commands run:
+          - cloud-init clean (in target)
+          - machine-id cleared (systemd regenerates per-clone on first boot)
+          - SSH host keys deleted (openssh regenerates on first sshd start)
+          - datasource restricted to NoCloud for fast clone boot
+          - shutdown -h now
+    9.  VM shuts down; the temporary VM and all temp files are removed
+    10. Output VHDX is generalised and ready to clone
+
+    Clones require a CIDATA seed to configure hostname, user credentials, and
+    networking on first boot. Provide one via a FAT VHD or ISO labelled CIDATA
+    attached as a SCSI device.
+
+    Both Server and Desktop ISOs are supported. The grub.cfg patch handles both
+    since they use the same boot/grub/grub.cfg structure.
+
+--------------------------------------------------------------------------------
+
+DIAGNOSING FAILURES
+-------------------
+
+  General:
+    - The script prints timestamped progress for every step
+    - On failure, the error message includes the file and line number
+    - All cleanup (dismount, VM removal) runs even if a step fails
+
+  Windows guest errors (Configure-BaseImage.ps1 or Sysprep failures):
+    - Mount the failed VHDX in File Explorer (right-click > Mount)
+    - Check: Windows\Temp\BaseImageSetup.log
+    - Check: Windows\System32\Sysprep\Panther\setupact.log
+    - Check: Windows\System32\Sysprep\Panther\setuperr.log
+    - Open Hyper-V Manager during the build to watch the VM console
+
+  Windows clone first-boot errors (Configure-Clone.ps1 failures):
+    - Check: Windows\Temp\ConfigureClone.log inside the cloned VM
+
+  Ubuntu installer failures:
+    - Open Hyper-V Manager and connect to the VM console while it runs
+    - Key installer logs inside the running VM:
+        /var/log/installer/subiquity-server-debug.log  (main installer log)
+        /var/log/installer/curtin-install.log          (disk/package operations)
+    - Confirm CIDATA was detected:
+        grep -i cidata /var/log/installer/subiquity-server-debug.log
+    - Check whether late-commands ran:
+        grep -i "late.command" /var/log/installer/subiquity-server-debug.log
+
+================================================================================
