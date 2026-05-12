@@ -114,12 +114,15 @@ try {
             throw "sysprep.exe not found at '$sysprepExe'."
         }
 
-        Write-Log "  Launching: $sysprepExe /generalize /shutdown /oobe /quiet /mode:vm"
+        Write-Log "  Sleeping to avoid race conditions"
+        Start-Sleep -Seconds 45
+
+        Write-Log "  Launching: $sysprepExe /generalize /shutdown /oobe /mode:vm"
         Write-Log "  /mode:vm suppresses EFI NVRAM writes that fail inside Hyper-V Gen2 VMs."
         Write-Log "  The VM will shut down when Sysprep completes - this is expected."
 
         $proc = Start-Process -FilePath $sysprepExe `
-                              -ArgumentList '/generalize', '/shutdown', '/oobe', '/quiet', '/mode:vm' `
+                              -ArgumentList '/generalize', '/shutdown', '/oobe', '/mode:vm' `
                               -Wait -PassThru -NoNewWindow
 
         $sysprepErrLog = "$env:SystemRoot\System32\Sysprep\Panther\setuperr.log"
